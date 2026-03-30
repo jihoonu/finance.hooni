@@ -243,46 +243,7 @@ def analyze_structure(df_raw, q_name, prev_state):
     }
     
     return data_labels, data_values, current_state
-
 # ==========================================
-# 4. 분석 실행기 루프 (💡 직전 연도 4Q 자동 추가)
-# ==========================================
-def run_financial_analysis(api_key, company_name, start_year, progress_callback=None):
-    dart = OpenDartReader(api_key)
-    reprt_codes = {'11013': '1Q', '11012': '2Q', '11014': '3Q', '11011': '4Q'}
-    
-    now = datetime.datetime.now()
-    current_year = now.year
-    current_month = now.month
-    
-    valid_periods = []
-    
-    # 💡 [핵심 추가] 시작 연도의 '직전 연도 4분기(기말)'를 리스트 맨 앞에 강제로 끼워 넣습니다.
-    valid_periods.append((start_year - 1, '11011', '4Q'))
-    
-    for year in range(start_year, current_year + 1):
-        for code, q_name in reprt_codes.items():
-            if year == current_year:
-                if q_name == '1Q' and current_month <= 3: continue
-                if q_name == '2Q' and current_month <= 6: continue
-                if q_name == '3Q' and current_month <= 9: continue
-                if q_name == '4Q': continue 
-            valid_periods.append((year, code, q_name))
-            
-    total_steps = len(valid_periods)
-    current_step = 0
-    final_dict = {}
-    row_labels = []
-    prev_state = {}
-
-    for year, code, q_name in valid_periods:
-        current_step += 1
-        period_name = f"{str(year)[-2:]}년 {q_name}"
-        
-        if progress_callback:
-            progress_callback(current_step, total_steps, f"{period_name} 데이터 수집 중...")
-        
-        # ==========================================
 # 4. 분석 실행기 루프 (수정됨)
 # ==========================================
 def run_financial_analysis(api_key, company_name, start_year, progress_callback=None):
