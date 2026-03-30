@@ -75,23 +75,21 @@ if 'analyzed_data' in st.session_state:
     # 1. 표 출력 (3개 탭으로 분리)
     formatted_df = display_df.apply(format_by_index)
 
-    # Streamlit의 탭 기능 활용
     tab_bs, tab_is, tab_cf = st.tabs(["🏛️ 재무상태표", "📊 손익계산서", "💸 현금흐름표"])
 
     with tab_bs:
-        st.markdown("**[재무상태표] 자산, 부채, 자본 현황**")
+        # 재무상태표: 0~9번째 줄 (변경 없음)
         st.dataframe(formatted_df.iloc[0:10], use_container_width=True)
 
     with tab_is:
-        st.markdown("**[손익계산서] 매출 및 이익 현황**")
-        st.dataframe(formatted_df.iloc[10:28], use_container_width=True)
+        # 손익계산서: 검증 항목이 추가되어서 10~28번째 줄까지 늘어남 (기존 10:28 -> 10:29 로 변경)
+        st.dataframe(formatted_df.iloc[10:29], use_container_width=True)
 
     with tab_cf:
-        st.markdown("**[현금흐름표] 기업의 현금 창출 능력**")
-        st.dataframe(formatted_df.iloc[28:], use_container_width=True)
+        # 현금흐름표: 29번째 줄부터 끝까지 (기존 28: -> 29: 로 변경)
+        st.dataframe(formatted_df.iloc[29:], use_container_width=True)
 
     st.divider()
-
     
     # ==========================================
     # 💡 [그래프 섹션] 시각화 차트 그리기
