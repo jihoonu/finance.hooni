@@ -179,20 +179,31 @@ def analyze_structure(df_raw, q_name, prev_state):
     ytd_capex = net_ppe_acq + net_int_acq 
     ytd_fcff = ytd_cfo - ytd_capex
 
-    # 💡 [수정] DART 데이터에서 '전기말(작년 말)' 잔액을 직접 가져옵니다.
-    py_receivables = get_bs_val(['매출채권'], col='frmtrm_amount')
-    py_inventory = get_bs_val(['재고자산'], col='frmtrm_amount')
-
-    # 💡 [수정] 말씀하신 공식 적용: 연환산 매출액 / ((전기말 + 당기말) / 2)
+    # 💡 [수정 2] 모든 평균 계산을 (작년 연말 + 당기말) / 2 로 고정
     avg_receivables = (py_receivables + curr_receivables) / 2 if py_receivables else curr_receivables
     turnover_recv = (ytd_revenue * annualize_factor / avg_receivables) if avg_receivables > 0 else 0
     days_recv = (365 / turnover_recv) if turnover_recv > 0 else 0
 
-    # 💡 [수정] 재고자산 공식 적용: 연환산 매출원가 / ((전기말 + 당기말) / 2)
     avg_inventory = (py_inventory + curr_inventory) / 2 if py_inventory else curr_inventory
     turnover_inv = (abs(ytd_cogs) * annualize_factor / avg_inventory) if avg_inventory > 0 else 0
     days_inv = (365 / turnover_inv) if turnover_inv > 0 else 0
 
+    # ROE 계산
+    avg_equity = (py_equity + controlling_equity) / 2 if py_equity else controlling_equity
+    if avg_equity > 0:
+        period_roe = (ytd_net_income / avg_equity) * 100
+        roe = period_roe * annualize_factor
+    else:
+        roe = 0
+
+    # ROIC 계산
+    nopat = ytd_op_income * (1 - effective_tax_rate)
+    avg_noa = (py_noa + val_net_op_asset) / 2 if py_noa else val_net_op_asset
+    if avg_noa > 0:
+        period_roic = (nopat / avg_noa) * 100
+        roic = period_roic * annualize_factor
+    else:
+        roic = 0
 
     gp_margin = (ytd_gross_profit / ytd_revenue * 100) if ytd_revenue > 0 else 0
     op_margin = (ytd_op_income / ytd_revenue * 100) if ytd_revenue > 0 else 0
@@ -200,40 +211,20 @@ def analyze_structure(df_raw, q_name, prev_state):
     effective_tax_rate = ytd_tax / ytd_ebt if ytd_ebt > 0 else 0.22
     if not (0 <= effective_tax_rate <= 1.0): effective_tax_rate = 0.22
 
-    # ==========================================
-    # 💡 [수정] 3분기 값을 끌고 오던 prev_state 완전 폐기!
-    # DART 재무상태표의 'frmtrm_amount'는 무조건 '작년 12월 31일(당기초)'을 의미합니다.
-    # ==========================================
-
-    # 1. ROE 분모: (작년 12월 31일 지배자본 + 당기말 지배자본) / 2
-    py_controlling_equity = get_bs_val(['지배기업', '지배주주'], strict_id='ifrs-full_EquityAttributableToOwnersOfParent', col='frmtrm_amount')
-    if not py_controlling_equity:  
-        py_controlling_equity = get_bs_val(['자본총계'], strict_id='ifrs-full_Equity', col='frmtrm_amount')
-
-    avg_equity = (py_controlling_equity + controlling_equity) / 2 if py_controlling_equity else controlling_equity
-
-    if avg_equity > 0:
-        period_roe = (ytd_net_income / avg_equity) * 100  
-        roe = period_roe * annualize_factor               
-    else:
-        roe = 0
-
-    # 2. ROIC 분모: (작년 12월 31일 순영업자산 + 당기말 순영업자산) / 2
-    # 순영업자산(NOA) = 영업자산 - 영업부채 (전기말 기준 계산)
+    # 💡 [수정 1] 직전 분기 자산/자본 캐싱 완전 삭제 (무조건 작년 연말 데이터 직행)
+    py_equity = get_bs_val(['지배기업', '지배주주'], strict_id='ifrs-full_EquityAttributableToOwnersOfParent', col='frmtrm_amount') or get_bs_val(['자본총계'], strict_id='ifrs-full_Equity', col='frmtrm_amount')
+    py_receivables = get_bs_val(['매출채권'], col='frmtrm_amount')
+    py_inventory = get_bs_val(['재고자산'], col='frmtrm_amount')
+    
     py_op_asset = get_bs_val(['자산총계'], strict_id='ifrs-full_Assets', col='frmtrm_amount') - df_bs[df_bs['category'] == '추정재무자산']['frmtrm_amount'].apply(parse_amount).sum()
     py_op_debt = get_bs_val(['부채총계'], strict_id='ifrs-full_Liabilities', col='frmtrm_amount') - df_bs[df_bs['category'] == '추정재무부채']['frmtrm_amount'].apply(parse_amount).sum()
     py_noa = py_op_asset - py_op_debt
 
-    avg_noa = (py_noa + val_net_op_asset) / 2 if py_noa else val_net_op_asset
-
-    nopat = ytd_op_income * (1 - effective_tax_rate)
-    
-    if avg_noa > 0:
-        period_roic = (nopat / avg_noa) * 100             
-        roic = period_roic * annualize_factor             
+    # 손익계산서 누적을 위한 acc 보따리만 남겨둡니다.
+    if not prev_state:
+        prev_acc = {}
     else:
-        roic = 0
-
+        prev_acc = {} if q_name == '1Q' else prev_state.get('acc', {})
 
     # ----------------------------------------
     # [Step 5] 화면 표출 데이터
