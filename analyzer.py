@@ -282,21 +282,75 @@ def run_financial_analysis(api_key, company_name, start_year, progress_callback=
         if progress_callback:
             progress_callback(current_step, total_steps, f"{period_name} 데이터 수집 중...")
         
+        # ==========================================
+# 4. 분석 실행기 루프 (수정됨)
+# ==========================================
+def run_financial_analysis(api_key, company_name, start_year, progress_callback=None):
+    dart = OpenDartReader(api_key)
+    
+    # [수정 1] 사용자가 입력한 이름으로 DART에 등록된 기업 찾기 검증
+    company = dart.find_by_name(company_name)
+    if company is None or company.empty:
+        print(f"오류: DART에서 '{company_name}'을(를) 찾을 수 없습니다. 공식 명칭이나 종목코드를 확인하세요.")
+        return None
+    
+    # 여러 개가 검색될 수 있으므로 첫 번째(가장 정확한 상장사 위주) 회사의 공식 명칭이나 종목코드 사용
+    # DART 고유번호(corp_code)를 사용하는 것이 가장 안전합니다.
+    target_corp_code = company.iloc[0]['corp_code'] 
+
+    reprt_codes = {'11013': '1Q', '11012': '2Q', '11014': '3Q', '11011': '4Q'}
+
+    now = datetime.datetime.now()
+    current_year = now.year
+    current_month = now.month
+
+    valid_periods = []
+    valid_periods.append((start_year - 1, '11011', '4Q'))
+
+    for year in range(start_year, current_year + 1):
+        for code, q_name in reprt_codes.items():
+            if year == current_year:
+                if q_name == '1Q' and current_month <= 3: continue
+                if q_name == '2Q' and current_month <= 6: continue
+                if q_name == '3Q' and current_month <= 9: continue
+                if q_name == '4Q': continue 
+            valid_periods.append((year, code, q_name))
+
+    total_steps = len(valid_periods)
+    current_step = 0
+    final_dict = {}
+    row_labels = []
+    prev_state = {}
+
+    for year, code, q_name in valid_periods:
+        current_step += 1
+        period_name = f"{str(year)[-2:]}년 {q_name}"
+
+        if progress_callback:
+            progress_callback(current_step, total_steps, f"{period_name} 데이터 수집 중...")
+
         try:
-            df_all = dart.finstate_all(company_name, year, reprt_code=code)
+            # [수정 2] company_name 대신 target_corp_code(고유번호) 사용
+            df_all = dart.finstate_all(target_corp_code, year, reprt_code=code)
+            
             if df_all is not None and not df_all.empty:
+                # analyze_structure 함수는 df_all에서 데이터를 추출하므로 그대로 유지
                 labels, values, current_state = analyze_structure(df_raw=df_all, q_name=q_name, prev_state=prev_state)
+
+                # 주의: 리턴받은 current_state를 다시 prev_state에 넣는 로직은
+                # 원본 코드 구조상 analyze_structure 안에서 current_state를 만들고 반환해야 작동합니다.
+                # 올려주신 코드에는 analyze_structure 함수의 return 값에 current_state가 빠져있습니다! (아래 참고)
                 
                 final_dict[period_name] = values
                 if not row_labels: 
                     row_labels = labels
-                
-                # 분석이 끝난 후, 완벽하게 정리된 현재 분기의 상태를 다음 분기의 'prev_state'로 전달합니다.
+
                 prev_state = current_state
-                
+
             time.sleep(0.5) 
-        except Exception:
-            # 만약 직전 연도 4Q 데이터가 없어서 에러가 나더라도, 루프는 멈추지 않고 빈 prev_state로 안전하게 다음 분기(시작 연도 1Q)로 넘어갑니다.
+        except Exception as e:
+            # [수정 3] 에러가 났을 때 원인을 파악하기 위해 에러 로그 출력
+            print(f"[{period_name}] 데이터 수집 실패: {e}")
             pass 
 
     if not final_dict:
