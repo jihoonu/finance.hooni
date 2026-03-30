@@ -225,9 +225,8 @@ def analyze_structure(df_raw, q_name, prev_state):
         prev_acc = {}
     else:
         prev_acc = {} if q_name == '1Q' else prev_state.get('acc', {})
-
     # ----------------------------------------
-    # [Step 5] 화면 표출 데이터
+    # [Step 5] 화면 표출 데이터 (💡 누락/손실 복구 및 ROE/ROIC 검증 항목 분리)
     # ----------------------------------------
     data_labels = [
         '1. 추정영업자산', '2. 추정재무자산', '3. 자산총계', 
@@ -239,31 +238,35 @@ def analyze_structure(df_raw, q_name, prev_state):
         '15. 세전이익', '16. 법인세비용', '  - 실효세율 (추정 %)', '17. 당기순이익', 
         '18. ROE (%)', 
         '  [검증] 연환산 지배순이익',
-        '  [검증] 평균 지배자본', 
+        '  [검증] 전기말(당기초) 지배자본',
+        '  [검증] 당기말 지배자본',
         '19. ROIC (%)',
         '20. 영업활동현금흐름', '21. 투자활동현금흐름', '  - 유형자산순취득액', '  - 무형자산순취득액', '  - 자본적지출(CAPEX)',
         '22. 재무활동현금흐름', '  - FCFF'
     ]
-    
+
     def scale(v): return v / 1000000 if v else 0
 
     data_values = [
         scale(val_op_asset), scale(val_fin_asset), scale(total_asset), 
         scale(val_op_debt), scale(val_fin_debt), scale(total_debt), scale(total_equity), 
         scale(val_net_op_asset), scale(val_net_fin_asset), ratio_debt, 
-        
+
         scale(ytd_revenue), turnover_recv, days_recv, 
         scale(ytd_cogs), turnover_inv, days_inv, 
         scale(ytd_gross_profit), gp_margin, scale(ytd_op_income), op_margin, 
         scale(ytd_ebt), scale(ytd_tax), effective_tax_rate*100, scale(ytd_net_income), 
+        
         roe, 
         scale(ytd_net_income * annualize_factor), 
-        scale(avg_equity),
-        roic, 
+        scale(py_equity),              # 💡 [검증용] 전기말(작년 연말) 지배자본
+        scale(controlling_equity),     # 💡 [검증용] 당기말 지배자본
         
+        roic, 
+
         scale(ytd_cfo), scale(ytd_cfi), scale(net_ppe_acq), scale(net_int_acq), scale(ytd_capex), scale(ytd_cff), scale(ytd_fcff)
     ]
-    
+
     current_state = {
         'equity': controlling_equity,
         'receivables': curr_receivables, 
@@ -279,8 +282,9 @@ def analyze_structure(df_raw, q_name, prev_state):
             'ni': ytd_net_income
         }
     }
-    
+
     return data_labels, data_values, current_state
+
 # ==========================================
 # 4. 분석 실행기 루프 (수정됨)
 # ==========================================
