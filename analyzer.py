@@ -193,16 +193,31 @@ def analyze_structure(df_raw, q_name, prev_state):
     if not py_controlling_equity:  # 만약 지배주주지분이 따로 기재되지 않은 기업이면 전체 자본총계 사용
         py_controlling_equity = get_bs_val(['자본총계'], strict_id='ifrs-full_Equity', col='frmtrm_amount')
 
-    # 💡 [수정] 말씀하신 공식 적용: (전기말 지배자본 + 당기말 지배자본) / 2
-    avg_equity = (py_controlling_equity + controlling_equity) / 2 if py_controlling_equity else controlling_equity
-    
-    # 💡 [수정] ROE 계산: (연환산 지배순이익 / 평균 지배자본) * 100
-    roe = (ytd_net_income * annualize_factor / avg_equity * 100) if avg_equity > 0 else 0
+    # 💡 1. 평균 지배주주지분 자본 계산 (전기말 데이터 사용)
+    py_controlling_equity = get_bs_val(['지배기업', '지배주주'], strict_id='ifrs-full_EquityAttributableToOwnersOfParent', col='frmtrm_amount')
+    if not py_controlling_equity:  
+        py_controlling_equity = get_bs_val(['자본총계'], strict_id='ifrs-full_Equity', col='frmtrm_amount')
 
+    avg_equity = (py_controlling_equity + controlling_equity) / 2 if py_controlling_equity else controlling_equity
+
+    # 💡 2. ROE 계산: 분기(누적) 수치를 먼저 계산한 후 연환산
+    if avg_equity > 0:
+        period_roe = (ytd_net_income / avg_equity) * 100  # 해당 기간까지의 ROE 산출
+        roe = period_roe * annualize_factor               # 연환산 팩터 적용
+    else:
+        roe = 0
+
+    # 💡 3. ROIC도 동일한 흐름으로 수정 (전기말 순영업자산 기준)
+    py_noa = prev_noa  # 원본 코드가 prev_noa를 사용하고 있어 일단 유지 (정확히 하려면 py_noa도 get_bs_val로 전기말 자산을 직접 불러와야 함)
+    avg_noa = (py_noa + val_net_op_asset) / 2 if py_noa else val_net_op_asset
 
     nopat = ytd_op_income * (1 - effective_tax_rate)
-    avg_noa = (prev_noa + val_net_op_asset) / 2 if prev_noa else val_net_op_asset
-    roic = (nopat * annualize_factor / avg_noa * 100) if avg_noa > 0 else 0
+    
+    if avg_noa > 0:
+        period_roic = (nopat / avg_noa) * 100             # 해당 기간까지의 ROIC 산출
+        roic = period_roic * annualize_factor             # 연환산 팩터 적용
+    else:
+        roic = 0
 
     # ----------------------------------------
     # [Step 5] 화면 표출 데이터
