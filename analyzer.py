@@ -33,7 +33,7 @@ def parse_amount(val):
     except ValueError: return 0.0
 
 # ==========================================
-# 3. 핵심 재무 분석 로직 (💡 순서 완벽 정리됨)
+# 3. 핵심 재무 분석 로직
 # ==========================================
 def analyze_structure(df_raw, q_name, prev_state):
     annualize_factor = {"1Q": 4.0, "2Q": 2.0, "3Q": 4.0/3.0, "4Q": 1.0}.get(q_name, 1.0)
@@ -88,7 +88,7 @@ def analyze_structure(df_raw, q_name, prev_state):
     curr_inventory = get_bs_val(['재고자산'])
     controlling_equity = get_bs_val(['지배기업', '지배주주'], strict_id='ifrs-full_EquityAttributableToOwnersOfParent') or total_equity
 
-    # 3. 전기말(작년 연말) 자산/자본 확실하게 추출 (💡 계산 전 미리 불러와야 함!)
+    # 3. 전기말(작년 연말) 자산/자본 추출
     py_equity = get_bs_val(['지배기업', '지배주주'], strict_id='ifrs-full_EquityAttributableToOwnersOfParent', col='frmtrm_amount') or get_bs_val(['자본총계'], strict_id='ifrs-full_Equity', col='frmtrm_amount')
     py_receivables = get_bs_val(['매출채권'], col='frmtrm_amount')
     py_inventory = get_bs_val(['재고자산'], col='frmtrm_amount')
@@ -97,7 +97,7 @@ def analyze_structure(df_raw, q_name, prev_state):
     py_op_debt = get_bs_val(['부채총계'], strict_id='ifrs-full_Liabilities', col='frmtrm_amount') - df_bs[df_bs['category'] == '추정재무부채']['frmtrm_amount'].apply(parse_amount).sum()
     py_noa = py_op_asset - py_op_debt
 
-    # 4. 손익계산서용 누적 캐시 (직전 분기 자본/자산 가져오던 악성 코드 삭제)
+    # 4. 손익계산서용 누적 캐시
     if not prev_state:
         prev_acc = {}
     else:
@@ -141,7 +141,7 @@ def analyze_structure(df_raw, q_name, prev_state):
     if ytd_net_income == 0: 
         ytd_net_income = calc_is_ytd('ni', ['당기순이익', '당기순손실'], strict_id='ifrs-full_ProfitLoss')
 
-    # 5. 비율 지표 계산 (이제 순서대로 py_ 변수 사용 가능!)
+    # 5. 비율 지표 계산
     avg_receivables = (py_receivables + curr_receivables) / 2 if py_receivables else curr_receivables
     turnover_recv = (ytd_revenue * annualize_factor / avg_receivables) if avg_receivables > 0 else 0
     days_recv = (365 / turnover_recv) if turnover_recv > 0 else 0
@@ -156,19 +156,17 @@ def analyze_structure(df_raw, q_name, prev_state):
     effective_tax_rate = ytd_tax / ytd_ebt if ytd_ebt > 0 else 0.22
     if not (0 <= effective_tax_rate <= 1.0): effective_tax_rate = 0.22
 
-    # ROE 계산
-    avg_equity = (py_equity + controlling_equity) / 2 if py_equity else controlling_equity
-    if avg_equity > 0:
-        period_roe = (ytd_net_income / avg_equity) * 100
+    # ROE 계산 (평균 대신 각 분기말 지배자본 사용)
+    if controlling_equity > 0:
+        period_roe = (ytd_net_income / controlling_equity) * 100
         roe = period_roe * annualize_factor
     else:
         roe = 0
 
-    # ROIC 계산
+    # ROIC 계산 (평균 대신 당기말 순영업자산 사용)
     nopat = ytd_op_income * (1 - effective_tax_rate)
-    avg_noa = (py_noa + val_net_op_asset) / 2 if py_noa else val_net_op_asset
-    if avg_noa > 0:
-        period_roic = (nopat / avg_noa) * 100
+    if val_net_op_asset > 0:
+        period_roic = (nopat / val_net_op_asset) * 100
         roic = period_roic * annualize_factor
     else:
         roic = 0
@@ -215,7 +213,7 @@ def analyze_structure(df_raw, q_name, prev_state):
     ytd_fcff = ytd_cfo - ytd_capex
 
     # ----------------------------------------
-    # [Step 5] 화면 표출 데이터 (💡 검증 항목 완벽 매칭)
+    # [Step 5] 화면 표출 데이터
     # ----------------------------------------
     data_labels = [
         '1. 추정영업자산', '2. 추정재무자산', '3. 자산총계', 
@@ -226,9 +224,8 @@ def analyze_structure(df_raw, q_name, prev_state):
         '13. 매출총이익', '  - 총이익률 (%)', '14. 영업이익', '  - 영업이익률 (%)', 
         '15. 세전이익', '16. 법인세비용', '  - 실효세율 (추정 %)', '17. 당기순이익', 
         '18. ROE (%)', 
-        '  [검증] 연환산 지배순이익',
-        '  [검증] 전기말(당기초) 지배자본',
-        '  [검증] 당기말 지배자본',
+        '  - 연환산 지배순이익',
+        '  - 분기별 지배자본 (당기말)',
         '19. ROIC (%)',
         '20. 영업활동현금흐름', '21. 투자활동현금흐름', '  - 유형자산순취득액', '  - 무형자산순취득액', '  - 자본적지출(CAPEX)',
         '22. 재무활동현금흐름', '  - FCFF'
@@ -248,8 +245,7 @@ def analyze_structure(df_raw, q_name, prev_state):
 
         roe, 
         scale(ytd_net_income * annualize_factor), 
-        scale(py_equity),              # 💡 작년 연말 지배자본
-        scale(controlling_equity),     # 💡 이번 분기/연말 지배자본
+        scale(controlling_equity),     # 각 분기별 지배자본
 
         roic, 
 
