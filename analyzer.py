@@ -200,11 +200,6 @@ def analyze_structure(df_raw, q_name, prev_state):
     effective_tax_rate = ytd_tax / ytd_ebt if ytd_ebt > 0 else 0.22
     if not (0 <= effective_tax_rate <= 1.0): effective_tax_rate = 0.22
 
-    # 💡 [수정] DART 데이터에서 '전기말(작년 말)' 지배주주지분 자본을 확실하게 가져옵니다.
-    py_controlling_equity = get_bs_val(['지배기업', '지배주주'], strict_id='ifrs-full_EquityAttributableToOwnersOfParent', col='frmtrm_amount')
-    if not py_controlling_equity:  # 만약 지배주주지분이 따로 기재되지 않은 기업이면 전체 자본총계 사용
-        py_controlling_equity = get_bs_val(['자본총계'], strict_id='ifrs-full_Equity', col='frmtrm_amount')
-
     # ==========================================
     # 💡 [수정] 3분기 값을 끌고 오던 prev_state 완전 폐기!
     # DART 재무상태표의 'frmtrm_amount'는 무조건 '작년 12월 31일(당기초)'을 의미합니다.
