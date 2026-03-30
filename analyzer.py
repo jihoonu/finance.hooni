@@ -188,8 +188,17 @@ def analyze_structure(df_raw, q_name, prev_state):
     effective_tax_rate = ytd_tax / ytd_ebt if ytd_ebt > 0 else 0.22
     if not (0 <= effective_tax_rate <= 1.0): effective_tax_rate = 0.22
 
-    avg_equity = (prev_equity + controlling_equity) / 2 if prev_equity else controlling_equity
+    # 💡 [수정] DART 데이터에서 '전기말(작년 말)' 지배주주지분 자본을 확실하게 가져옵니다.
+    py_controlling_equity = get_bs_val(['지배기업', '지배주주'], strict_id='ifrs-full_EquityAttributableToOwnersOfParent', col='frmtrm_amount')
+    if not py_controlling_equity:  # 만약 지배주주지분이 따로 기재되지 않은 기업이면 전체 자본총계 사용
+        py_controlling_equity = get_bs_val(['자본총계'], strict_id='ifrs-full_Equity', col='frmtrm_amount')
+
+    # 💡 [수정] 말씀하신 공식 적용: (전기말 지배자본 + 당기말 지배자본) / 2
+    avg_equity = (py_controlling_equity + controlling_equity) / 2 if py_controlling_equity else controlling_equity
+    
+    # 💡 [수정] ROE 계산: (연환산 지배순이익 / 평균 지배자본) * 100
     roe = (ytd_net_income * annualize_factor / avg_equity * 100) if avg_equity > 0 else 0
+
 
     nopat = ytd_op_income * (1 - effective_tax_rate)
     avg_noa = (prev_noa + val_net_op_asset) / 2 if prev_noa else val_net_op_asset
