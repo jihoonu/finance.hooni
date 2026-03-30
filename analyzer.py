@@ -167,13 +167,20 @@ def analyze_structure(df_raw, q_name, prev_state):
     ytd_capex = net_ppe_acq + net_int_acq 
     ytd_fcff = ytd_cfo - ytd_capex
 
-    avg_receivables = (prev_receivables + curr_receivables) / 2 if prev_receivables else curr_receivables
+    # 💡 [수정] DART 데이터에서 '전기말(작년 말)' 잔액을 직접 가져옵니다.
+    py_receivables = get_bs_val(['매출채권'], col='frmtrm_amount')
+    py_inventory = get_bs_val(['재고자산'], col='frmtrm_amount')
+
+    # 💡 [수정] 말씀하신 공식 적용: 연환산 매출액 / ((전기말 + 당기말) / 2)
+    avg_receivables = (py_receivables + curr_receivables) / 2 if py_receivables else curr_receivables
     turnover_recv = (ytd_revenue * annualize_factor / avg_receivables) if avg_receivables > 0 else 0
     days_recv = (365 / turnover_recv) if turnover_recv > 0 else 0
 
-    avg_inventory = (prev_inventory + curr_inventory) / 2 if prev_inventory else curr_inventory
+    # 💡 [수정] 재고자산 공식 적용: 연환산 매출원가 / ((전기말 + 당기말) / 2)
+    avg_inventory = (py_inventory + curr_inventory) / 2 if py_inventory else curr_inventory
     turnover_inv = (abs(ytd_cogs) * annualize_factor / avg_inventory) if avg_inventory > 0 else 0
     days_inv = (365 / turnover_inv) if turnover_inv > 0 else 0
+
 
     gp_margin = (ytd_gross_profit / ytd_revenue * 100) if ytd_revenue > 0 else 0
     op_margin = (ytd_op_income / ytd_revenue * 100) if ytd_revenue > 0 else 0
