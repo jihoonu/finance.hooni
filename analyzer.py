@@ -205,31 +205,40 @@ def analyze_structure(df_raw, q_name, prev_state):
     if not py_controlling_equity:  # 만약 지배주주지분이 따로 기재되지 않은 기업이면 전체 자본총계 사용
         py_controlling_equity = get_bs_val(['자본총계'], strict_id='ifrs-full_Equity', col='frmtrm_amount')
 
-    # 💡 1. 평균 지배주주지분 자본 계산 (전기말 데이터 사용)
+    # ==========================================
+    # 💡 [수정] 3분기 값을 끌고 오던 prev_state 완전 폐기!
+    # DART 재무상태표의 'frmtrm_amount'는 무조건 '작년 12월 31일(당기초)'을 의미합니다.
+    # ==========================================
+
+    # 1. ROE 분모: (작년 12월 31일 지배자본 + 당기말 지배자본) / 2
     py_controlling_equity = get_bs_val(['지배기업', '지배주주'], strict_id='ifrs-full_EquityAttributableToOwnersOfParent', col='frmtrm_amount')
     if not py_controlling_equity:  
         py_controlling_equity = get_bs_val(['자본총계'], strict_id='ifrs-full_Equity', col='frmtrm_amount')
 
     avg_equity = (py_controlling_equity + controlling_equity) / 2 if py_controlling_equity else controlling_equity
 
-    # 💡 2. ROE 계산: 분기(누적) 수치를 먼저 계산한 후 연환산
     if avg_equity > 0:
-        period_roe = (ytd_net_income / avg_equity) * 100  # 해당 기간까지의 ROE 산출
-        roe = period_roe * annualize_factor               # 연환산 팩터 적용
+        period_roe = (ytd_net_income / avg_equity) * 100  
+        roe = period_roe * annualize_factor               
     else:
         roe = 0
 
-    # 💡 3. ROIC도 동일한 흐름으로 수정 (전기말 순영업자산 기준)
-    py_noa = prev_noa  # 원본 코드가 prev_noa를 사용하고 있어 일단 유지 (정확히 하려면 py_noa도 get_bs_val로 전기말 자산을 직접 불러와야 함)
+    # 2. ROIC 분모: (작년 12월 31일 순영업자산 + 당기말 순영업자산) / 2
+    # 순영업자산(NOA) = 영업자산 - 영업부채 (전기말 기준 계산)
+    py_op_asset = get_bs_val(['자산총계'], strict_id='ifrs-full_Assets', col='frmtrm_amount') - df_bs[df_bs['category'] == '추정재무자산']['frmtrm_amount'].apply(parse_amount).sum()
+    py_op_debt = get_bs_val(['부채총계'], strict_id='ifrs-full_Liabilities', col='frmtrm_amount') - df_bs[df_bs['category'] == '추정재무부채']['frmtrm_amount'].apply(parse_amount).sum()
+    py_noa = py_op_asset - py_op_debt
+
     avg_noa = (py_noa + val_net_op_asset) / 2 if py_noa else val_net_op_asset
 
     nopat = ytd_op_income * (1 - effective_tax_rate)
     
     if avg_noa > 0:
-        period_roic = (nopat / avg_noa) * 100             # 해당 기간까지의 ROIC 산출
-        roic = period_roic * annualize_factor             # 연환산 팩터 적용
+        period_roic = (nopat / avg_noa) * 100             
+        roic = period_roic * annualize_factor             
     else:
         roic = 0
+
 
     # ----------------------------------------
     # [Step 5] 화면 표출 데이터
