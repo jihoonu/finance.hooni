@@ -38,6 +38,14 @@ def parse_amount(val):
 def analyze_structure(df_raw, q_name, prev_state):
     annualize_factor = {"1Q": 4.0, "2Q": 2.0, "3Q": 4.0/3.0, "4Q": 1.0}.get(q_name, 1.0)
 
+    # 💡 [핵심 수정 1] 연결재무제표(CFS)와 별도재무제표(OFS) 완벽 분리!
+    # 연결재무제표가 있는 기업이면 무조건 연결(CFS) 데이터만 남깁니다.
+    if 'fs_div' in df_raw.columns:
+        if 'CFS' in df_raw['fs_div'].values:
+            df_raw = df_raw[df_raw['fs_div'] == 'CFS']
+        else:
+            df_raw = df_raw[df_raw['fs_div'] == 'OFS']
+
     df_bs = df_raw[df_raw['sj_div'] == 'BS'].copy()
     df_is = df_raw[df_raw['sj_div'].isin(['IS', 'CIS'])].copy()
     df_cf = df_raw[df_raw['sj_div'] == 'CF'].copy()
@@ -47,12 +55,16 @@ def analyze_structure(df_raw, q_name, prev_state):
         if strict_id:
             row = df_bs[df_bs['account_id'] == strict_id]
             if not row.empty: return parse_amount(row.iloc[0][col])
-            
+
         clean_nm = df_bs['account_nm'].str.replace(' ', '')
         mask = clean_nm.str.contains('|'.join(keywords), na=False)
         if '부채총계' in keywords:
             mask &= ~clean_nm.str.contains('자본', na=False)
             
+        # 💡 [핵심 수정 2] '비지배지분'을 '지배지분'으로 오해하는 것 완벽 차단!
+        if any('지배' in kw for kw in keywords):
+            mask &= ~clean_nm.str.contains('비지배', na=False)
+
         rows = df_bs[mask]
         return parse_amount(rows.iloc[0][col]) if not rows.empty else 0.0
 
