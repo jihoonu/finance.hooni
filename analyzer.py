@@ -249,15 +249,13 @@ def analyze_structure(df_raw, q_name, prev_state):
 def run_financial_analysis(api_key, company_name, start_year, progress_callback=None):
     dart = OpenDartReader(api_key)
     
-    # [수정 1] 사용자가 입력한 이름으로 DART에 등록된 기업 찾기 검증
-    company = dart.find_by_name(company_name)
-    if company is None or company.empty:
-        print(f"오류: DART에서 '{company_name}'을(를) 찾을 수 없습니다. 공식 명칭이나 종목코드를 확인하세요.")
-        return None
+    # 💡 [수정 완료] 올바른 함수명(find_corp_code)으로 변경
+    target_corp_code = dart.find_corp_code(company_name)
     
-    # 여러 개가 검색될 수 있으므로 첫 번째(가장 정확한 상장사 위주) 회사의 공식 명칭이나 종목코드 사용
-    # DART 고유번호(corp_code)를 사용하는 것이 가장 안전합니다.
-    target_corp_code = company.iloc[0]['corp_code'] 
+    # target_corp_code가 없으면(None) 에러 메시지 출력 후 종료
+    if not target_corp_code:
+        print(f"🚨 오류: DART에서 '{company_name}' 기업의 고유번호를 찾을 수 없습니다.")
+        return None
 
     reprt_codes = {'11013': '1Q', '11012': '2Q', '11014': '3Q', '11011': '4Q'}
 
