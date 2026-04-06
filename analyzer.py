@@ -98,10 +98,19 @@ def analyze_structure(df_raw, q_name, prev_state):
     py_noa = py_op_asset - py_op_debt
 
     # 4. 손익계산서용 누적 캐시
+    # --- [수정] prev_state에서 기초(작년 연말) 자본 가져오기 ---
     if not prev_state:
         prev_acc = {}
+        py_end_equity = 0.0
     else:
         prev_acc = {} if q_name == '1Q' else prev_state.get('acc', {})
+        
+        # 직전 데이터가 4Q였다면, 그 4Q의 당기말 자본을 '올해의 기초 자본'으로 셋팅
+        if prev_state.get('q_name') == '4Q':
+            py_end_equity = prev_state.get('current_equity', 0.0)
+        else:
+            # 2Q, 3Q일 경우 올해 내내 작년 연말 자본을 기초 자본으로 유지
+            py_end_equity = prev_state.get('py_end_equity', 0.0)
 
     def get_is_discrete(keywords, strict_id=None, exclude_kws=None):
         if df_is.empty: return 0.0
@@ -156,9 +165,16 @@ def analyze_structure(df_raw, q_name, prev_state):
     effective_tax_rate = ytd_tax / ytd_ebt if ytd_ebt > 0 else 0.22
     if not (0 <= effective_tax_rate <= 1.0): effective_tax_rate = 0.22
 
-    # ROE 계산 (평균 대신 각 분기말 지배자본 사용)
-    if controlling_equity > 0:
-        period_roe = (ytd_net_income / controlling_equity) * 100
+    # --- [수정] 평균 자본 및 ROE 계산 ---
+    # py_end_equity가 0이면(첫 루프 등) 기존의 py_equity나 당기말 자본으로 대체
+    base_equity = py_end_equity if py_end_equity > 0 else (py_equity if py_equity > 0 else controlling_equity)
+    
+    # (기초 자본 + 기말 자본) / 2
+    avg_equity = (base_equity + controlling_equity) / 2
+
+    # ROE 계산 (평균 지배자본 사용)
+    if avg_equity > 0:
+        period_roe = (ytd_net_income / avg_equity) * 100
         roe = period_roe * annualize_factor
     else:
         roe = 0
@@ -252,12 +268,15 @@ def analyze_structure(df_raw, q_name, prev_state):
         scale(ytd_cfo), scale(ytd_cfi), scale(net_ppe_acq), scale(net_int_acq), scale(ytd_capex), scale(ytd_cff), scale(ytd_fcff)
     ]
 
-    # 다음 분기 손익 누적을 위해 acc 데이터만 저장해서 넘김
+    # --- [수정] 다음 루프를 위해 상태값 넘기기 ---
     current_state = {
         'acc': {
             'rev': ytd_revenue, 'cogs': ytd_cogs, 'gp': ytd_gross_profit,
             'op': ytd_op_income, 'ebt': ytd_ebt, 'tax': ytd_tax, 'ni': ytd_net_income
-        }
+        },
+        'q_name': q_name,
+        'current_equity': controlling_equity,
+        'py_end_equity': py_end_equity  # 1~3Q 진행되는 동안 기초 자본 유지를 위함
     }
 
     return data_labels, data_values, current_state
