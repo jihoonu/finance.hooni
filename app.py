@@ -5,7 +5,7 @@ from analyzer import run_financial_analysis
 
 st.set_page_config(page_title="모바일 재무분석기", page_icon="📈", layout="wide")
 
-st.title("📈 내 손안의 고급 재무분석기")
+st.title("📈 재무제표 분석 프로그램")
 st.markdown("시작 연도만 입력하면 최근 실적까지 원클릭 자동 분석")
 
 st.sidebar.header("설정")
