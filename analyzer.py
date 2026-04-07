@@ -32,6 +32,8 @@ def parse_amount(val):
     try: return float(s)
     except ValueError: return 0.0
 
+import traceback
+
 # ==========================================
 # 3. 핵심 재무 분석 로직 (완성본)
 # ==========================================
@@ -59,7 +61,9 @@ def analyze_structure(df_raw, q_name, prev_state):
         mask = clean_nm.str.contains('|'.join(keywords), na=False)
         if '부채총계' in keywords:
             mask &= ~clean_nm.str.contains('자본', na=False)
-        if any('지배' in kw for keywords in keywords for kw in keywords): # 비지배지분 오인식 방지
+            
+        # [오타 수정 완료] 비지배지분 오인식 방지
+        if any('지배' in kw for kw in keywords):
             mask &= ~clean_nm.str.contains('비지배', na=False)
 
         rows = df_bs[mask]
@@ -86,22 +90,19 @@ def analyze_structure(df_raw, q_name, prev_state):
     curr_inventory = get_bs_val(['재고자산'])
     controlling_equity = get_bs_val(['지배기업', '지배주주'], strict_id='ifrs-full_EquityAttributableToOwnersOfParent') or total_equity
 
-    # 3. 전기말(작년 연말) 일반 계정 추출 (회전율 계산용 등)
+    # 3. 전기말(작년 연말) 일반 계정 추출
     py_receivables = get_bs_val(['매출채권'], col='frmtrm_amount')
     py_inventory = get_bs_val(['재고자산'], col='frmtrm_amount')
 
-    # [수정 적용 완료] DART 의존 탈피 - 기초 지배자본 및 손익 누적 캐시 셋팅
+    # [수정 적용 완료] DART 전기말 오류 방지 - 기초 지배자본 셋팅
     if not prev_state:
         prev_acc = {}
-        base_controlling_equity = controlling_equity # 첫 루프는 비교군이 없으므로 당기말 사용
+        base_controlling_equity = controlling_equity
     else:
         prev_acc = {} if q_name == '1Q' else prev_state.get('acc', {})
-        
         if q_name == '1Q':
-            # 1Q: 직전 루프(작년 4Q)의 기말 자본을 '올해의 기초 자본'으로 확정
             base_controlling_equity = prev_state.get('current_equity', controlling_equity)
         else:
-            # 2Q, 3Q, 4Q: 1Q때 확정해둔 '올해 기초 자본'을 연말까지 계속 유지
             base_controlling_equity = prev_state.get('base_controlling_equity', controlling_equity)
 
     # 4. 손익계산서 데이터 추출
@@ -158,16 +159,14 @@ def analyze_structure(df_raw, q_name, prev_state):
     effective_tax_rate = ytd_tax / ytd_ebt if ytd_ebt > 0 else 0.22
     if not (0 <= effective_tax_rate <= 1.0): effective_tax_rate = 0.22
 
-    # [수정 적용 완료] ROE 계산: 분자(기간 손익)와 분모(시점 자본의 평균) 완벽 매칭
+    # [수정 적용 완료] 기간-시점 불일치 해결
     avg_controlling_equity = (base_controlling_equity + controlling_equity) / 2
-
     if avg_controlling_equity > 0:
         period_roe = (ytd_net_income / avg_controlling_equity) * 100
         roe = period_roe * annualize_factor
     else:
         roe = 0
 
-    # ROIC 계산 (평균 대신 당기말 순영업자산 사용)
     nopat = ytd_op_income * (1 - effective_tax_rate)
     if val_net_op_asset > 0:
         period_roic = (nopat / val_net_op_asset) * 100
@@ -216,9 +215,7 @@ def analyze_structure(df_raw, q_name, prev_state):
     ytd_capex = net_ppe_acq + net_int_acq
     ytd_fcff = ytd_cfo - ytd_capex
 
-    # ----------------------------------------
-    # [Step 5] 화면 표출 데이터
-    # ----------------------------------------
+    # 7. 화면 표출 데이터 포맷팅
     data_labels = [
         '1. 추정영업자산', '2. 추정재무자산', '3. 자산총계',
         '4. 추정영업부채', '5. 추정재무부채', '6. 부채총계', '7. 순자산 (자본총계)',
@@ -256,38 +253,34 @@ def analyze_structure(df_raw, q_name, prev_state):
         scale(ytd_cfo), scale(ytd_cfi), scale(net_ppe_acq), scale(net_int_acq), scale(ytd_capex), scale(ytd_cff), scale(ytd_fcff)
     ]
 
-    # [수정 적용 완료] 상태값 저장 및 다음 루프로 전달
     current_state = {
         'acc': {
             'rev': ytd_revenue, 'cogs': ytd_cogs, 'gp': ytd_gross_profit,
             'op': ytd_op_income, 'ebt': ytd_ebt, 'tax': ytd_tax, 'ni': ytd_net_income
         },
-        'current_equity': controlling_equity,              # 내년 1Q에 넘겨줄 '작년 당기말 자본'
-        'base_controlling_equity': base_controlling_equity # 올해 내내 유지할 '기초 자본'
+        'current_equity': controlling_equity,
+        'base_controlling_equity': base_controlling_equity
     }
 
     return data_labels, data_values, current_state
 
 # ==========================================
-# 4. 분석 실행기 루프
+# 4. 분석 실행기 루프 (에러 디버깅 강화)
 # ==========================================
 def run_financial_analysis(api_key, company_name, start_year, progress_callback=None):
     dart = OpenDartReader(api_key)
-
     target_corp_code = dart.find_corp_code(company_name)
 
     if not target_corp_code:
-        print(f"🚨 오류: DART에서 '{company_name}' 기업의 고유번호를 찾을 수 없습니다.")
+        print(f":rotating_light: 오류: DART에서 '{company_name}' 기업의 고유번호를 찾을 수 없습니다.")
         return None
 
     reprt_codes = {'11013': '1Q', '11012': '2Q', '11014': '3Q', '11011': '4Q'}
-
     now = datetime.datetime.now()
     current_year = now.year
     current_month = now.month
 
-    valid_periods = []
-    valid_periods.append((start_year - 1, '11011', '4Q'))
+    valid_periods = [(start_year - 1, '11011', '4Q')]
 
     for year in range(start_year, current_year + 1):
         for code, q_name in reprt_codes.items():
@@ -295,7 +288,7 @@ def run_financial_analysis(api_key, company_name, start_year, progress_callback=
                 if q_name == '1Q' and current_month <= 3: continue
                 if q_name == '2Q' and current_month <= 6: continue
                 if q_name == '3Q' and current_month <= 9: continue
-                if q_name == '4Q': continue 
+                if q_name == '4Q': continue
             valid_periods.append((year, code, q_name))
 
     total_steps = len(valid_periods)
@@ -316,20 +309,18 @@ def run_financial_analysis(api_key, company_name, start_year, progress_callback=
 
             if df_all is not None and not df_all.empty:
                 labels, values, current_state = analyze_structure(df_raw=df_all, q_name=q_name, prev_state=prev_state)
-
                 final_dict[period_name] = values
-                if not row_labels: 
+                if not row_labels:
                     row_labels = labels
-
                 prev_state = current_state
 
-            time.sleep(0.5) 
+            time.sleep(0.5)
         except Exception as e:
-            print(f"[{period_name}] 데이터 수집 실패: {e}")
-            pass 
+            print(f":x: [{period_name}]에서 분석 멈춤! 상세 에러 내용:")
+            traceback.print_exc()  # 에러가 나면 조용히 넘어가지 않고 터진 위치를 정확히 출력합니다.
+            pass
 
     if not final_dict:
         return None
 
-    result_df = pd.DataFrame(final_dict, index=row_labels)
-    return result_df
+    return pd.DataFrame(final_dict, index=row_labels)
