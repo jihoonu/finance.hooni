@@ -32,15 +32,12 @@ def parse_amount(val):
     try: return float(s)
     except ValueError: return 0.0
 
-import traceback
-
 # ==========================================
-# 3. 핵심 재무 분석 로직 (완성본)
+# 3. 핵심 재무 분석 로직
 # ==========================================
 def analyze_structure(df_raw, q_name, prev_state):
     annualize_factor = {"1Q": 4.0, "2Q": 2.0, "3Q": 4.0/3.0, "4Q": 1.0}.get(q_name, 1.0)
 
-    # 1. 연결(CFS) / 별도(OFS) 재무제표 분리
     if 'fs_div' in df_raw.columns:
         if 'CFS' in df_raw['fs_div'].values:
             df_raw = df_raw[df_raw['fs_div'] == 'CFS']
@@ -61,8 +58,6 @@ def analyze_structure(df_raw, q_name, prev_state):
         mask = clean_nm.str.contains('|'.join(keywords), na=False)
         if '부채총계' in keywords:
             mask &= ~clean_nm.str.contains('자본', na=False)
-            
-        # [오타 수정 완료] 비지배지분 오인식 방지
         if any('지배' in kw for kw in keywords):
             mask &= ~clean_nm.str.contains('비지배', na=False)
 
@@ -72,14 +67,13 @@ def analyze_structure(df_raw, q_name, prev_state):
     df_bs['amount'] = df_bs['thstrm_amount'].apply(parse_amount)
     df_bs['category'] = df_bs['account_nm'].apply(classify_account)
 
-    # 2. 당기말(이번 분기말) 자산/부채/자본 추출
+    # 당기말 추출
     total_asset = get_bs_val(['자산총계'], strict_id='ifrs-full_Assets')
     total_debt = get_bs_val(['부채총계'], strict_id='ifrs-full_Liabilities')
     total_equity = get_bs_val(['자본총계'], strict_id='ifrs-full_Equity') or (total_asset - total_debt)
 
     val_fin_asset = df_bs[df_bs['category'] == '추정재무자산']['amount'].sum()
     val_fin_debt = df_bs[df_bs['category'] == '추정재무부채']['amount'].sum()
-
     val_op_asset = total_asset - val_fin_asset
     val_op_debt = total_debt - val_fin_debt
     val_net_op_asset = val_op_asset - val_op_debt
@@ -90,22 +84,25 @@ def analyze_structure(df_raw, q_name, prev_state):
     curr_inventory = get_bs_val(['재고자산'])
     controlling_equity = get_bs_val(['지배기업', '지배주주'], strict_id='ifrs-full_EquityAttributableToOwnersOfParent') or total_equity
 
-    # 3. 전기말(작년 연말) 일반 계정 추출
+    # 전기말 추출 (자본 제외)
     py_receivables = get_bs_val(['매출채권'], col='frmtrm_amount')
     py_inventory = get_bs_val(['재고자산'], col='frmtrm_amount')
 
-    # [수정 적용 완료] DART 전기말 오류 방지 - 기초 지배자본 셋팅
+    # ★ 핵심 수정 파트: 기초 지배자본 세팅 (분모 시점 맞춤)
     if not prev_state:
         prev_acc = {}
+        # 최초 시작 연도(4Q)는 기초 자본 데이터가 없으므로 기말 자본으로 대체
         base_controlling_equity = controlling_equity
     else:
         prev_acc = {} if q_name == '1Q' else prev_state.get('acc', {})
         if q_name == '1Q':
+            # 1Q: 작년 4Q의 당기말 자본을 '올해 기초 자본'으로 고정
             base_controlling_equity = prev_state.get('current_equity', controlling_equity)
         else:
+            # 2Q, 3Q, 4Q: 1Q 때 고정해둔 기초 자본을 연말까지 계속 유지
             base_controlling_equity = prev_state.get('base_controlling_equity', controlling_equity)
 
-    # 4. 손익계산서 데이터 추출
+    # 손익계산서 누적 로직
     def get_is_discrete(keywords, strict_id=None, exclude_kws=None):
         if df_is.empty: return 0.0
         def _extract(subset):
@@ -121,7 +118,6 @@ def analyze_structure(df_raw, q_name, prev_state):
         clean_nm = df_is['account_nm'].str.replace(' ', '')
         mask = clean_nm.str.contains('|'.join(keywords), na=False)
         rows = df_is[mask].copy()
-
         if exclude_kws:
             rows = rows[~clean_nm.str.contains('|'.join(exclude_kws), na=False)]
         if rows.empty: return 0.0
@@ -144,7 +140,7 @@ def analyze_structure(df_raw, q_name, prev_state):
     if ytd_net_income == 0:
         ytd_net_income = calc_is_ytd('ni', ['당기순이익', '당기순손실'], strict_id='ifrs-full_ProfitLoss')
 
-    # 5. 비율 지표 계산
+    # 비율 지표 계산
     avg_receivables = (py_receivables + curr_receivables) / 2 if py_receivables else curr_receivables
     turnover_recv = (ytd_revenue * annualize_factor / avg_receivables) if avg_receivables > 0 else 0
     days_recv = (365 / turnover_recv) if turnover_recv > 0 else 0
@@ -155,11 +151,10 @@ def analyze_structure(df_raw, q_name, prev_state):
 
     gp_margin = (ytd_gross_profit / ytd_revenue * 100) if ytd_revenue > 0 else 0
     op_margin = (ytd_op_income / ytd_revenue * 100) if ytd_revenue > 0 else 0
-
     effective_tax_rate = ytd_tax / ytd_ebt if ytd_ebt > 0 else 0.22
     if not (0 <= effective_tax_rate <= 1.0): effective_tax_rate = 0.22
 
-    # [수정 적용 완료] 기간-시점 불일치 해결
+    # ★ 핵심 수정 파트: 평균 지배자본 및 분자 분모가 맞는 ROE 계산
     avg_controlling_equity = (base_controlling_equity + controlling_equity) / 2
     if avg_controlling_equity > 0:
         period_roe = (ytd_net_income / avg_controlling_equity) * 100
@@ -174,13 +169,12 @@ def analyze_structure(df_raw, q_name, prev_state):
     else:
         roic = 0
 
-    # 6. 현금흐름표 처리
+    # 현금흐름표 처리
     def get_cf_ytd(keywords, strict_id=None, exclude_kws=None):
         if df_cf.empty: return 0.0
         if strict_id:
             rows = df_cf[df_cf['account_id'] == strict_id]
             if not rows.empty: return parse_amount(rows.iloc[0]['thstrm_amount'])
-
         clean_nm = df_cf['account_nm'].str.replace(' ', '')
         mask = clean_nm.str.contains('|'.join(keywords), na=False)
         rows = df_cf[mask].copy()
@@ -215,7 +209,7 @@ def analyze_structure(df_raw, q_name, prev_state):
     ytd_capex = net_ppe_acq + net_int_acq
     ytd_fcff = ytd_cfo - ytd_capex
 
-    # 7. 화면 표출 데이터 포맷팅
+    # 화면 표출 데이터
     data_labels = [
         '1. 추정영업자산', '2. 추정재무자산', '3. 자산총계',
         '4. 추정영업부채', '5. 추정재무부채', '6. 부채총계', '7. 순자산 (자본총계)',
@@ -224,7 +218,7 @@ def analyze_structure(df_raw, q_name, prev_state):
         '12. 매출원가', '  - 재고자산회전율 (회)', '  - 재고자산회전기간 (일)',
         '13. 매출총이익', '  - 총이익률 (%)', '14. 영업이익', '  - 영업이익률 (%)',
         '15. 세전이익', '16. 법인세비용', '  - 실효세율 (추정 %)', '17. 당기순이익',
-        '18. ROE (%)',
+        '18. 평균지배자본 기반 ROE (%)',
         '  - 연환산 지배순이익',
         '  - 분기별 지배자본 (당기말)',
         '19. ROIC (%)',
@@ -238,41 +232,38 @@ def analyze_structure(df_raw, q_name, prev_state):
         scale(val_op_asset), scale(val_fin_asset), scale(total_asset),
         scale(val_op_debt), scale(val_fin_debt), scale(total_debt), scale(total_equity),
         scale(val_net_op_asset), scale(val_net_fin_asset), ratio_debt,
-
         scale(ytd_revenue), turnover_recv, days_recv,
         scale(ytd_cogs), turnover_inv, days_inv,
         scale(ytd_gross_profit), gp_margin, scale(ytd_op_income), op_margin,
         scale(ytd_ebt), scale(ytd_tax), effective_tax_rate*100, scale(ytd_net_income),
-
         roe,
         scale(ytd_net_income * annualize_factor),
         scale(controlling_equity),
-
         roic,
-
         scale(ytd_cfo), scale(ytd_cfi), scale(net_ppe_acq), scale(net_int_acq), scale(ytd_capex), scale(ytd_cff), scale(ytd_fcff)
     ]
 
+    # 다음 루프 전달용 상태값 저장
     current_state = {
         'acc': {
             'rev': ytd_revenue, 'cogs': ytd_cogs, 'gp': ytd_gross_profit,
             'op': ytd_op_income, 'ebt': ytd_ebt, 'tax': ytd_tax, 'ni': ytd_net_income
         },
-        'current_equity': controlling_equity,
-        'base_controlling_equity': base_controlling_equity
+        'current_equity': controlling_equity,               # 내년 1Q를 위한 기말자본
+        'base_controlling_equity': base_controlling_equity  # 올해 유지할 기초자본
     }
 
     return data_labels, data_values, current_state
 
 # ==========================================
-# 4. 분석 실행기 루프 (에러 디버깅 강화)
+# 4. 분석 실행기 루프
 # ==========================================
 def run_financial_analysis(api_key, company_name, start_year, progress_callback=None):
     dart = OpenDartReader(api_key)
     target_corp_code = dart.find_corp_code(company_name)
 
     if not target_corp_code:
-        print(f":rotating_light: 오류: DART에서 '{company_name}' 기업의 고유번호를 찾을 수 없습니다.")
+        print(f"오류: DART에서 '{company_name}' 기업의 고유번호를 찾을 수 없습니다.")
         return None
 
     reprt_codes = {'11013': '1Q', '11012': '2Q', '11014': '3Q', '11011': '4Q'}
@@ -303,6 +294,8 @@ def run_financial_analysis(api_key, company_name, start_year, progress_callback=
 
         if progress_callback:
             progress_callback(current_step, total_steps, f"{period_name} 데이터 수집 중...")
+        else:
+            print(f"{period_name} 데이터 수집 중...")
 
         try:
             df_all = dart.finstate_all(target_corp_code, year, reprt_code=code)
@@ -313,14 +306,27 @@ def run_financial_analysis(api_key, company_name, start_year, progress_callback=
                 if not row_labels:
                     row_labels = labels
                 prev_state = current_state
-
+            
             time.sleep(0.5)
         except Exception as e:
-            print(f":x: [{period_name}]에서 분석 멈춤! 상세 에러 내용:")
-            traceback.print_exc()  # 에러가 나면 조용히 넘어가지 않고 터진 위치를 정확히 출력합니다.
+            print(f"[{period_name}] 데이터 분석 에러 발생: {e}")
             pass
 
     if not final_dict:
+        print("데이터를 가져오지 못했습니다. API 키나 종목명을 확인하세요.")
         return None
 
     return pd.DataFrame(final_dict, index=row_labels)
+
+# ==========================================
+# 실행 테스트 코드 (본인 API 키 입력)
+# ==========================================
+if __name__ == "__main__":
+    API_KEY = '여기에_본인의_DART_API_키를_넣어주세요'
+    
+    # 예시: 삼성전자 2022년부터 실행
+    result_df = run_financial_analysis(API_KEY, '삼성전자', 2022)
+    
+    if result_df is not None:
+        print("\n분석 완료! 결과 데이터프레임:")
+        print(result_df)
