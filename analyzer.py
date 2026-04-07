@@ -97,20 +97,19 @@ def analyze_structure(df_raw, q_name, prev_state):
     py_op_debt = get_bs_val(['부채총계'], strict_id='ifrs-full_Liabilities', col='frmtrm_amount') - df_bs[df_bs['category'] == '추정재무부채']['frmtrm_amount'].apply(parse_amount).sum()
     py_noa = py_op_asset - py_op_debt
 
-    # 4. 손익계산서용 누적 캐시
-    # --- [수정] prev_state에서 기초(작년 연말) 자본 가져오기 ---
+    # 4. 손익계산서 및 기초 데이터용 누적 캐시
     if not prev_state:
         prev_acc = {}
-        py_end_equity = 0.0
+        py_controlling_equity = 0.0
     else:
         prev_acc = {} if q_name == '1Q' else prev_state.get('acc', {})
         
-        # 직전 데이터가 4Q였다면, 그 4Q의 당기말 자본을 '올해의 기초 자본'으로 셋팅
+        # 직전이 4Q였다면 그 때의 기말 지배자본을 올해의 '기초 지배자본'으로 세팅
         if prev_state.get('q_name') == '4Q':
-            py_end_equity = prev_state.get('current_equity', 0.0)
+            py_controlling_equity = prev_state.get('controlling_equity', 0.0)
         else:
-            # 2Q, 3Q일 경우 올해 내내 작년 연말 자본을 기초 자본으로 유지
-            py_end_equity = prev_state.get('py_end_equity', 0.0)
+            # 2Q, 3Q 진행 중에는 저장해둔 기초 지배자본을 계속 유지
+            py_controlling_equity = prev_state.get('py_controlling_equity', 0.0)
 
     def get_is_discrete(keywords, strict_id=None, exclude_kws=None):
         if df_is.empty: return 0.0
@@ -165,16 +164,20 @@ def analyze_structure(df_raw, q_name, prev_state):
     effective_tax_rate = ytd_tax / ytd_ebt if ytd_ebt > 0 else 0.22
     if not (0 <= effective_tax_rate <= 1.0): effective_tax_rate = 0.22
 
-    # --- [수정] 평균 자본 및 ROE 계산 ---
-    # py_end_equity가 0이면(첫 루프 등) 기존의 py_equity나 당기말 자본으로 대체
-    base_equity = py_end_equity if py_end_equity > 0 else (py_equity if py_equity > 0 else controlling_equity)
+    # ROE 계산 (지배자본 평균 사용)
+    # DART의 전기말 데이터(py_equity)가 제대로 잡혔다면 우선 사용, 0이라면 우리가 저장한 기초 지배자본 사용
+    base_controlling_equity = py_equity if py_equity > 0 else py_controlling_equity
     
-    # (기초 자본 + 기말 자본) / 2
-    avg_equity = (base_equity + controlling_equity) / 2
+    # 기초 자본을 도저히 구할 수 없는 첫 루프라면 당기말 자본으로 대체
+    if base_controlling_equity == 0:
+        base_controlling_equity = controlling_equity
+        
+    # (기초 지배자본 + 당기말 지배자본) / 2
+    avg_controlling_equity = (base_controlling_equity + controlling_equity) / 2
 
-    # ROE 계산 (평균 지배자본 사용)
-    if avg_equity > 0:
-        period_roe = (ytd_net_income / avg_equity) * 100
+    # 정확한 평균 지배자본을 기반으로 한 ROE
+    if avg_controlling_equity > 0:
+        period_roe = (ytd_net_income / avg_controlling_equity) * 100
         roe = period_roe * annualize_factor
     else:
         roe = 0
@@ -268,15 +271,15 @@ def analyze_structure(df_raw, q_name, prev_state):
         scale(ytd_cfo), scale(ytd_cfi), scale(net_ppe_acq), scale(net_int_acq), scale(ytd_capex), scale(ytd_cff), scale(ytd_fcff)
     ]
 
-    # --- [수정] 다음 루프를 위해 상태값 넘기기 ---
+    # 다음 분기/연도를 위해 acc 데이터 및 지배자본 상태 저장
     current_state = {
         'acc': {
             'rev': ytd_revenue, 'cogs': ytd_cogs, 'gp': ytd_gross_profit,
             'op': ytd_op_income, 'ebt': ytd_ebt, 'tax': ytd_tax, 'ni': ytd_net_income
         },
         'q_name': q_name,
-        'current_equity': controlling_equity,
-        'py_end_equity': py_end_equity  # 1~3Q 진행되는 동안 기초 자본 유지를 위함
+        'controlling_equity': controlling_equity,      # 다음 해 기초 자본으로 쓰기 위한 기말 지배자본
+        'py_controlling_equity': py_controlling_equity # 1~3Q 내내 기초 자본을 유지하기 위함
     }
 
     return data_labels, data_values, current_state
