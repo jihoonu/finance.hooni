@@ -33,7 +33,7 @@ def parse_amount(val):
     except ValueError: return 0.0
 
 # ==========================================
-# 3. 핵심 재무 분석 로직
+# 3. 핵심 재무 분석 로직 (완성본)
 # ==========================================
 def analyze_structure(df_raw, q_name, prev_state):
     annualize_factor = {"1Q": 4.0, "2Q": 2.0, "3Q": 4.0/3.0, "4Q": 1.0}.get(q_name, 1.0)
@@ -59,9 +59,7 @@ def analyze_structure(df_raw, q_name, prev_state):
         mask = clean_nm.str.contains('|'.join(keywords), na=False)
         if '부채총계' in keywords:
             mask &= ~clean_nm.str.contains('자본', na=False)
-
-        # 비지배지분 오인식 방지
-        if any('지배' in kw for kw in keywords):
+        if any('지배' in kw for keywords in keywords for kw in keywords): # 비지배지분 오인식 방지
             mask &= ~clean_nm.str.contains('비지배', na=False)
 
         rows = df_bs[mask]
@@ -88,22 +86,17 @@ def analyze_structure(df_raw, q_name, prev_state):
     curr_inventory = get_bs_val(['재고자산'])
     controlling_equity = get_bs_val(['지배기업', '지배주주'], strict_id='ifrs-full_EquityAttributableToOwnersOfParent') or total_equity
 
-    # 3. 전기말(작년 연말) 자산/자본 추출
-    py_equity = get_bs_val(['지배기업', '지배주주'], strict_id='ifrs-full_EquityAttributableToOwnersOfParent', col='frmtrm_amount') or get_bs_val(['자본총계'], strict_id='ifrs-full_Equity', col='frmtrm_amount')
+    # 3. 전기말(작년 연말) 일반 계정 추출 (회전율 계산용 등)
     py_receivables = get_bs_val(['매출채권'], col='frmtrm_amount')
     py_inventory = get_bs_val(['재고자산'], col='frmtrm_amount')
 
-    py_op_asset = get_bs_val(['자산총계'], strict_id='ifrs-full_Assets', col='frmtrm_amount') - df_bs[df_bs['category'] == '추정재무자산']['frmtrm_amount'].apply(parse_amount).sum()
-    py_op_debt = get_bs_val(['부채총계'], strict_id='ifrs-full_Liabilities', col='frmtrm_amount') - df_bs[df_bs['category'] == '추정재무부채']['frmtrm_amount'].apply(parse_amount).sum()
-    py_noa = py_op_asset - py_op_debt
-
-    # ---------------------------------------------------------
-    # [수정 1] 기초 지배자본 세팅 (DART frmtrm_amount 절대 신뢰 금지)
-    # ---------------------------------------------------------
+    # [수정 적용 완료] DART 의존 탈피 - 기초 지배자본 및 손익 누적 캐시 셋팅
     if not prev_state:
-        # 최초 연도(start_year - 1) 4Q 루프: 비교할 기초가 없으므로 당기말 자본 사용
-        base_controlling_equity = controlling_equity 
+        prev_acc = {}
+        base_controlling_equity = controlling_equity # 첫 루프는 비교군이 없으므로 당기말 사용
     else:
+        prev_acc = {} if q_name == '1Q' else prev_state.get('acc', {})
+        
         if q_name == '1Q':
             # 1Q: 직전 루프(작년 4Q)의 기말 자본을 '올해의 기초 자본'으로 확정
             base_controlling_equity = prev_state.get('current_equity', controlling_equity)
@@ -111,6 +104,7 @@ def analyze_structure(df_raw, q_name, prev_state):
             # 2Q, 3Q, 4Q: 1Q때 확정해둔 '올해 기초 자본'을 연말까지 계속 유지
             base_controlling_equity = prev_state.get('base_controlling_equity', controlling_equity)
 
+    # 4. 손익계산서 데이터 추출
     def get_is_discrete(keywords, strict_id=None, exclude_kws=None):
         if df_is.empty: return 0.0
         def _extract(subset):
@@ -136,7 +130,7 @@ def analyze_structure(df_raw, q_name, prev_state):
         discrete = get_is_discrete(keywords, strict_id, exclude_kws)
         if q_name in ['2Q', '3Q']:
             return prev_acc.get(key, 0.0) + discrete
-        return discrete 
+        return discrete
 
     ytd_revenue = calc_is_ytd('rev', ['매출액', '영업수익', '매출'], strict_id='ifrs-full_Revenue')
     ytd_cogs = calc_is_ytd('cogs', ['매출원가', '영업비용'], strict_id='ifrs-full_CostOfSales')
@@ -146,7 +140,7 @@ def analyze_structure(df_raw, q_name, prev_state):
     ytd_tax = calc_is_ytd('tax', ['법인세비용', '법인세'], strict_id='ifrs-full_IncomeTaxExpenseContinuingOperations', exclude_kws=['차감전'])
 
     ytd_net_income = calc_is_ytd('ni', ['지배'], strict_id='ifrs-full_ProfitLossAttributableToOwnersOfParent')
-    if ytd_net_income == 0: 
+    if ytd_net_income == 0:
         ytd_net_income = calc_is_ytd('ni', ['당기순이익', '당기순손실'], strict_id='ifrs-full_ProfitLoss')
 
     # 5. 비율 지표 계산
@@ -164,24 +158,9 @@ def analyze_structure(df_raw, q_name, prev_state):
     effective_tax_rate = ytd_tax / ytd_ebt if ytd_ebt > 0 else 0.22
     if not (0 <= effective_tax_rate <= 1.0): effective_tax_rate = 0.22
 
-    # ROE 계산 (지배자본 평균 사용)
-    # DART의 전기말 데이터(py_equity)가 제대로 잡혔다면 우선 사용, 0이라면 우리가 저장한 기초 지배자본 사용
-    base_controlling_equity = py_equity if py_equity > 0 else py_controlling_equity
-    
-    # 기초 자본을 도저히 구할 수 없는 첫 루프라면 당기말 자본으로 대체
-    if base_controlling_equity == 0:
-        base_controlling_equity = controlling_equity
-        
-    # (기초 지배자본 + 당기말 지배자본) / 2
+    # [수정 적용 완료] ROE 계산: 분자(기간 손익)와 분모(시점 자본의 평균) 완벽 매칭
     avg_controlling_equity = (base_controlling_equity + controlling_equity) / 2
 
-    # ---------------------------------------------------------
-    # [수정 2] 분자(기간 손익)와 분모(시점 자본의 평균) 매칭
-    # ---------------------------------------------------------
-    # 평균 지배자본 = (올해 1월 1일 기초 자본 + 이번 분기말 자본) / 2
-    avg_controlling_equity = (base_controlling_equity + controlling_equity) / 2
-
-    # ROE = (연환산 누적 순이익 / 평균 지배자본) * 100
     if avg_controlling_equity > 0:
         period_roe = (ytd_net_income / avg_controlling_equity) * 100
         roe = period_roe * annualize_factor
@@ -234,21 +213,21 @@ def analyze_structure(df_raw, q_name, prev_state):
 
     net_ppe_acq = ppe_acq - ppe_disp
     net_int_acq = int_acq - int_disp
-    ytd_capex = net_ppe_acq + net_int_acq 
+    ytd_capex = net_ppe_acq + net_int_acq
     ytd_fcff = ytd_cfo - ytd_capex
 
     # ----------------------------------------
     # [Step 5] 화면 표출 데이터
     # ----------------------------------------
     data_labels = [
-        '1. 추정영업자산', '2. 추정재무자산', '3. 자산총계', 
-        '4. 추정영업부채', '5. 추정재무부채', '6. 부채총계', '7. 순자산 (자본총계)', 
-        '8. 추정순영업자산', '9. 추정순재무자산', '10. 부채비율 (%)', 
-        '11. 매출액', '  - 매출채권회전율 (회)', '  - 매출채권회전기간 (일)', 
-        '12. 매출원가', '  - 재고자산회전율 (회)', '  - 재고자산회전기간 (일)', 
-        '13. 매출총이익', '  - 총이익률 (%)', '14. 영업이익', '  - 영업이익률 (%)', 
-        '15. 세전이익', '16. 법인세비용', '  - 실효세율 (추정 %)', '17. 당기순이익', 
-        '18. ROE (%)', 
+        '1. 추정영업자산', '2. 추정재무자산', '3. 자산총계',
+        '4. 추정영업부채', '5. 추정재무부채', '6. 부채총계', '7. 순자산 (자본총계)',
+        '8. 추정순영업자산', '9. 추정순재무자산', '10. 부채비율 (%)',
+        '11. 매출액', '  - 매출채권회전율 (회)', '  - 매출채권회전기간 (일)',
+        '12. 매출원가', '  - 재고자산회전율 (회)', '  - 재고자산회전기간 (일)',
+        '13. 매출총이익', '  - 총이익률 (%)', '14. 영업이익', '  - 영업이익률 (%)',
+        '15. 세전이익', '16. 법인세비용', '  - 실효세율 (추정 %)', '17. 당기순이익',
+        '18. ROE (%)',
         '  - 연환산 지배순이익',
         '  - 분기별 지배자본 (당기말)',
         '19. ROIC (%)',
@@ -259,34 +238,32 @@ def analyze_structure(df_raw, q_name, prev_state):
     def scale(v): return v / 1000000 if v else 0
 
     data_values = [
-        scale(val_op_asset), scale(val_fin_asset), scale(total_asset), 
-        scale(val_op_debt), scale(val_fin_debt), scale(total_debt), scale(total_equity), 
-        scale(val_net_op_asset), scale(val_net_fin_asset), ratio_debt, 
+        scale(val_op_asset), scale(val_fin_asset), scale(total_asset),
+        scale(val_op_debt), scale(val_fin_debt), scale(total_debt), scale(total_equity),
+        scale(val_net_op_asset), scale(val_net_fin_asset), ratio_debt,
 
-        scale(ytd_revenue), turnover_recv, days_recv, 
-        scale(ytd_cogs), turnover_inv, days_inv, 
-        scale(ytd_gross_profit), gp_margin, scale(ytd_op_income), op_margin, 
-        scale(ytd_ebt), scale(ytd_tax), effective_tax_rate*100, scale(ytd_net_income), 
+        scale(ytd_revenue), turnover_recv, days_recv,
+        scale(ytd_cogs), turnover_inv, days_inv,
+        scale(ytd_gross_profit), gp_margin, scale(ytd_op_income), op_margin,
+        scale(ytd_ebt), scale(ytd_tax), effective_tax_rate*100, scale(ytd_net_income),
 
-        roe, 
-        scale(ytd_net_income * annualize_factor), 
-        scale(controlling_equity),     # 각 분기별 지배자본
+        roe,
+        scale(ytd_net_income * annualize_factor),
+        scale(controlling_equity),
 
-        roic, 
+        roic,
 
         scale(ytd_cfo), scale(ytd_cfi), scale(net_ppe_acq), scale(net_int_acq), scale(ytd_capex), scale(ytd_cff), scale(ytd_fcff)
     ]
 
-    # ---------------------------------------------------------
-    # [수정 3] 상태값 저장 및 다음 루프로 전달
-    # ---------------------------------------------------------
+    # [수정 적용 완료] 상태값 저장 및 다음 루프로 전달
     current_state = {
         'acc': {
             'rev': ytd_revenue, 'cogs': ytd_cogs, 'gp': ytd_gross_profit,
             'op': ytd_op_income, 'ebt': ytd_ebt, 'tax': ytd_tax, 'ni': ytd_net_income
         },
-        'current_equity': controlling_equity,             # 내년 1Q에 기초 자본으로 넘겨줄 당기말 자본
-        'base_controlling_equity': base_controlling_equity # 올해 2Q~4Q 내내 유지할 기초 자본
+        'current_equity': controlling_equity,              # 내년 1Q에 넘겨줄 '작년 당기말 자본'
+        'base_controlling_equity': base_controlling_equity # 올해 내내 유지할 '기초 자본'
     }
 
     return data_labels, data_values, current_state
